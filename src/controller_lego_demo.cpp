@@ -74,10 +74,13 @@ public :
 
         // getting planner params
         nh.getParam(nh.getNamespace() + "/planner_parameters", planner_params_);
-        nh.getParam("right_gripper_id", right_gripper_id_);
-        nh.getParam("left_gripper_id", left_gripper_id_);
+        nh.getParam("/right_gripper_id", right_gripper_id_);
+        nh.getParam("/left_gripper_id", left_gripper_id_);
         asyn_spinner_.reset(new ros::AsyncSpinner(1));
         asyn_spinner_->start();
+	// calibrate grippers
+	calibrateGripper(left_gripper_pub_, left_gripper_id_);
+	calibrateGripper(right_gripper_pub_, right_gripper_id_);
     }
 
     void tfCallback(const tf2_msgs::TFMessageConstPtr& msg){
@@ -354,7 +357,7 @@ public :
 
     void calibrateGripper(ros::Publisher& gripper_pub, unsigned int gripper_id){
         baxter_core_msgs::EndEffectorCommand commandGripperMsg;
-
+	ROS_INFO_STREAM("CONTROLLER:: Calibrating **********************");
         commandGripperMsg.id = gripper_id;
         commandGripperMsg.command = "calibrate";
         gripper_pub.publish(commandGripperMsg);
@@ -368,7 +371,6 @@ public :
 
     void openGripper(ros::Publisher& gripper_pub, unsigned int gripper_id){
         baxter_core_msgs::EndEffectorCommand commandGripperMsg;
-
         commandGripperMsg.id = gripper_id;
         commandGripperMsg.command = "go";
         commandGripperMsg.args = "{\"position\": 100.0}";
@@ -391,7 +393,8 @@ public :
 
         //arm_group->setStartState(*arm_group->getCurrentState());
         std::vector< double >  joints_values = arm_group->getCurrentJointValues ();
-        joints_values[joints_values.size()-1] =wrist_rot_array_[rand_rotation_value_index_];
+        // joints_values[joints_values.size()-1] =wrist_rot_array_[rand_rotation_value_index_];
+        joints_values[joints_values.size()-1] =M_PI/2;
         arm_group->setJointValueTarget(joints_values);
 
         return static_cast<bool>(arm_group->execute(wrist_rotation_plan));
@@ -406,15 +409,15 @@ public :
         }
         rand_rotation_value_index_ =random_value;
 
-        return wrist_rot_array_[rand_rotation_value_index_];
+        return M_PI/2;//wrist_rot_array_[rand_rotation_value_index_];
     }
 
 
     bool executeTrajectory(){
 
         std::shared_ptr<moveit::planning_interface::MoveGroup> arm_group;
-        moveit::planning_interface::MoveGroup::Plan to_goal1_plan,to_goal3_plan, to_approach_point1_plan, to_approach_point2_plan, to_approach_point3_plan;
-        robot_state::RobotStatePtr start_state_for_approach1_trajectory, start_state_for_approach2_trajectory,
+        moveit::planning_interface::MoveGroup::Plan to_goal1_plan,to_goal2_plan,to_goal3_plan, wrist_rotation1_plan,wrist_rotation2_plan,to_approach_point1_plan, to_approach_point2_plan, to_approach_point3_plan;
+        robot_state::RobotStatePtr start_state_for_approach1_trajectory, start_state_for_approach2_trajectory,start_state_for_wrist_rotation1,start_state_for_wrist_rotation2,start_state_for_goal2_trajectory,
 	  start_state_for_approach3_trajectory,start_state_for_goal1_trajectory, start_state_for_goal3_trajectory;
         std::vector< double > arm_group_joints_state;
         std::string group_name, gripper_link_name;
@@ -425,11 +428,11 @@ public :
         bool wrist_rotation_plan_result = false;
 
         ROS_INFO_STREAM("CONTROLLER:: Aquiring the targeted position of the  end effector");
-        goal1_ = {0.4,0.6,0.2};
+        goal1_ = {0.5,0.63,0.07};
         goal1_normal_ = {0,0,0};
-	goal2_ = {0.4,0.2,0.2};
+	goal2_ = {0.5,0.3,0.07};
         goal2_normal_ = {0,0,0};
-        goal3_ = {0.6,0.2,0.2};
+        goal3_ = {0.7,0.3,0.07};
         goal3_normal_ = {0,0,0};
         int number_of_trials = 2;
 
@@ -446,6 +449,7 @@ public :
         goToStartingPosition("left");
         goToStartingPosition("right");
 
+	ROS_INFO_STREAM("CONTROLLER::gripperID***************************** "<< right_gripper_id_);
         double fraction1, fraction2;
         double cartesian_path_success_threshold;
         int iteration = 0;
@@ -568,6 +572,7 @@ public :
                 gripper_link_name = "right_gripper";
                 gripper_pub = right_gripper_pub_;
             }
+	    calibrateGripper(gripper_pub,gripper_id);
 
             // plan the first part of the trajectory: from the starting position to the approach point
             ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the selected approach point");
@@ -577,80 +582,218 @@ public :
 
 
             if (to_approach_point1_plan_result){
-	      start_state_for_goal1_trajectory = arm_group->getCurrentState();
-	      ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the specified goal");
-	      moveit::core::jointTrajPointToRobotState(to_approach_point1_plan.trajectory_.joint_trajectory,
-						       to_approach_point1_plan.trajectory_.joint_trajectory.points.size() - 1,
-						       *start_state_for_goal1_trajectory);
-	      octomap_manipulation(true);
-	      std::vector<geometry_msgs::Pose> waypoints1;
-	      waypoints1.push_back(transformed_approach_frame1_.pose);
-	      waypoints1.push_back(transformed_goal1_frame_.pose);
+                start_state_for_wrist_rotation1 = arm_group->getCurrentState();
+                ROS_INFO_STREAM("CONTROLLER:: Planning a random wrist rotation 1");
 
-	      moveit_msgs::RobotTrajectory robot_trajectory1;
-	      arm_group->setStartState(*start_state_for_goal1_trajectory);
-	      fraction1 = arm_group->computeCartesianPath(waypoints1, 0.01, 0.0, robot_trajectory1);
-	      
-	      // compute the success threshold: a computed cartesian path is considered a success
-	      //if it return a faction greater than this threshold
-	      //cartesian_path_success_threshold = approach_radius_/(- kExtentionDistance + approach_radius_ );
-	      cartesian_path_success_threshold = (approach_radius_ - kExtentionDistance)/approach_radius_ ;
-	      if(fraction1 >= cartesian_path_success_threshold){
-		to_goal1_plan.trajectory_ = robot_trajectory1;
-		start_state_for_approach2_trajectory = arm_group->getCurrentState();
-		ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the specified goal");
-		moveit::core::jointTrajPointToRobotState(to_goal1_plan.trajectory_.joint_trajectory,
-							 to_goal1_plan.trajectory_.joint_trajectory.points.size() - 1,
-							 *start_state_for_approach2_trajectory);
-		
-		std::vector<geometry_msgs::Pose> waypoints2;
-		waypoints2.push_back(transformed_goal1_frame_.pose);
-		waypoints2.push_back(transformed_goal2_frame_.pose);
-		waypoints2.push_back(transformed_goal3_frame_.pose);
-		
-		moveit_msgs::RobotTrajectory robot_trajectory2;
-		arm_group->setStartState(*start_state_for_approach2_trajectory);
-		fraction2 = arm_group->computeCartesianPath(waypoints2, 0.01, 0.0, robot_trajectory2);
+                // set the starting position for the wrist rotation
+                moveit::core::jointTrajPointToRobotState(to_approach_point1_plan.trajectory_.joint_trajectory,
+                                                         to_approach_point1_plan.trajectory_.joint_trajectory.points.size() - 1,
+                                                         *start_state_for_wrist_rotation1);
+
+                arm_group->setStartState(*start_state_for_wrist_rotation1);
+                start_state_for_wrist_rotation1->copyJointGroupPositions(group_name, arm_group_joints_state);
+
+                // set a random rotation for the wrist joint and plan the rotation
+                arm_group_joints_state[arm_group_joints_state.size()-1] = generateRandomRotationAngle();
+                arm_group->setJointValueTarget(arm_group_joints_state);
+                wrist_rotation_plan_result =  arm_group->plan(wrist_rotation1_plan);
+
+                // plan the final part of the trajectory: from the approach point to the goal
+                if (wrist_rotation_plan_result){
+		  start_state_for_goal1_trajectory = arm_group->getCurrentState();
+		  ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the specified goal 1");
+		  moveit::core::jointTrajPointToRobotState(wrist_rotation1_plan.trajectory_.joint_trajectory,
+							   wrist_rotation1_plan.trajectory_.joint_trajectory.points.size() - 1,
+							   *start_state_for_goal1_trajectory);
+                    tf::poseEigenToMsg(start_state_for_goal1_trajectory->getGlobalLinkTransform(gripper_link_name), gripper_pose);
+
+                    octomap_manipulation(true);
+
+                    // change the orientation of the selected frame to match the orientation of the gripper after rotation
+                    transformed_approach_frame1_.pose.orientation.x= gripper_pose.orientation.x;
+                    transformed_approach_frame1_.pose.orientation.y= gripper_pose.orientation.y;
+                    transformed_approach_frame1_.pose.orientation.z= gripper_pose.orientation.z;
+                    transformed_approach_frame1_.pose.orientation.w= gripper_pose.orientation.w;
+
+
+                    transformed_goal1_frame_.pose.orientation.x = gripper_pose.orientation.x;
+                    transformed_goal1_frame_.pose.orientation.y = gripper_pose.orientation.y;
+                    transformed_goal1_frame_.pose.orientation.z = gripper_pose.orientation.z;
+                    transformed_goal1_frame_.pose.orientation.w = gripper_pose.orientation.w;
+		    std::vector<geometry_msgs::Pose> waypoints1;
+		    waypoints1.push_back(transformed_approach_frame1_.pose);
+		    waypoints1.push_back(transformed_goal1_frame_.pose);
+		    
+		    moveit_msgs::RobotTrajectory robot_trajectory1;
+		    arm_group->setStartState(*start_state_for_goal1_trajectory);
+		    fraction1 = arm_group->computeCartesianPath(waypoints1, 0.01, 0.0, robot_trajectory1);
+	      	      // compute the success threshold: a computed cartesian path is considered a success
+		    //if it return a faction greater than this threshold
+		    //cartesian_path_success_threshold = approach_radius_/(- kExtentionDistance + approach_radius_ );
+		    cartesian_path_success_threshold = (approach_radius_ - kExtentionDistance)/approach_radius_ ;
+		    if(fraction1 >= cartesian_path_success_threshold){
+		      to_goal1_plan.trajectory_ = robot_trajectory1;
+		      start_state_for_goal2_trajectory = arm_group->getCurrentState();
+		      ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the specified goal 2");
+		      moveit::core::jointTrajPointToRobotState(to_goal1_plan.trajectory_.joint_trajectory,
+							       to_goal1_plan.trajectory_.joint_trajectory.points.size() - 1,
+							       *start_state_for_goal2_trajectory);
+		     
+		      tf::poseEigenToMsg(start_state_for_goal2_trajectory->getGlobalLinkTransform(gripper_link_name), gripper_pose);
+
+		      octomap_manipulation(true);
+
+		      // change the orientation of the selected frame to match the orientation of the gripper after rotation
+
+		      transformed_goal1_frame_.pose.orientation.x = gripper_pose.orientation.x;
+		      transformed_goal1_frame_.pose.orientation.y = gripper_pose.orientation.y;
+		      transformed_goal1_frame_.pose.orientation.z = gripper_pose.orientation.z;
+		      transformed_goal1_frame_.pose.orientation.w = gripper_pose.orientation.w;
+		      transformed_goal2_frame_.pose.orientation.x = gripper_pose.orientation.x;
+		      transformed_goal2_frame_.pose.orientation.y = gripper_pose.orientation.y;
+		      transformed_goal2_frame_.pose.orientation.z = gripper_pose.orientation.z;
+		      transformed_goal2_frame_.pose.orientation.w = gripper_pose.orientation.w;
+
+ 
+		      std::vector<geometry_msgs::Pose> waypoints2;
+		      waypoints2.push_back(transformed_goal1_frame_.pose);
+		      waypoints2.push_back(transformed_goal2_frame_.pose);
+		      moveit_msgs::RobotTrajectory robot_trajectory2;
+		      arm_group->setStartState(*start_state_for_goal2_trajectory);
+		      fraction2 = arm_group->computeCartesianPath(waypoints2, 0.01, 0.0, robot_trajectory2);
 		      
-		cartesian_path_success_threshold = (approach_radius_ - kExtentionDistance)/approach_radius_ ;
-		ROS_INFO_STREAM("CONTROLLER:: cartesian_path "<<fraction1);
-		if (fraction2 > 0){
-		  to_approach_point2_plan.trajectory_ = robot_trajectory2;
-		  ROS_INFO_STREAM("CONTROLLER:: Executing planned motion");
-		    // Execute plane: from starting position to the approach position
-		    bool to_approach_point_motion_result = static_cast<bool>(arm_group->execute(to_approach_point1_plan));
-		    ros::Duration(1).sleep();		    // open gripper
-		    openGripper(gripper_pub,gripper_id);
-		    ros::Duration(1).sleep();
-		    // Execute plane: from approach position to the specified goal
-		    moveit::core::robotStateToRobotStateMsg(*arm_group->getCurrentState(), to_goal1_plan.start_state_);
-		    //arm_group->setStartState(*arm_group->getCurrentState());
-		    bool to_goal_motion1_result = static_cast<bool>(arm_group->execute(to_goal1_plan));
-		    // Execute plane: from approach position to the specified goal
-		    moveit::core::robotStateToRobotStateMsg(*arm_group->getCurrentState(), to_approach_point2_plan.start_state_);
-		    // close gripper
-		    closeGripper(gripper_pub,gripper_id);
-		    ros::Duration(1).sleep();
-		    //arm_group->setStartState(*arm_group->getCurrentState());
-		    bool to_goal_motion2_result = static_cast<bool>(arm_group->execute(to_approach_point2_plan));
-		    if (to_goal_motion2_result){
-		      // open gripper
-		      openGripper(gripper_pub,gripper_id);
-		      ros::Duration(1).sleep();
-		      reverseBackTrajectory(to_approach_point2_plan, group_name, arm_group);
-		      // reverse back motion from starting position to the approach position
-		      reverseBackTrajectory(to_goal1_plan, group_name, arm_group);
-		      // reverse back motion from starting position to the approach position
-		      reverseBackTrajectory(to_approach_point1_plan, group_name, arm_group);
-		    }else {ROS_WARN_STREAM("CONTROLLER:: Failed to execute waypoints");}
-		}else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a straight line to goal");}
-	      }else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a straight line to waypoints");}
+		      cartesian_path_success_threshold = (approach_radius_ - kExtentionDistance)/approach_radius_ ;
+		      ROS_INFO_STREAM("CONTROLLER:: cartesian_path 2"<<fraction1);
+		      if (fraction2 > 0){
+			to_goal2_plan.trajectory_ = robot_trajectory2;
+			start_state_for_wrist_rotation2 = arm_group->getCurrentState();
+	               ROS_INFO_STREAM("CONTROLLER:: Planning a random wrist rotation2");
+
+			// set the starting position for the wrist rotation
+			moveit::core::jointTrajPointToRobotState(to_goal2_plan.trajectory_.joint_trajectory,
+								 to_goal2_plan.trajectory_.joint_trajectory.points.size() - 1,
+								 *start_state_for_wrist_rotation2);
+			
+			arm_group->setStartState(*start_state_for_wrist_rotation2);
+			start_state_for_wrist_rotation2->copyJointGroupPositions(group_name, arm_group_joints_state);
+			
+			// set a random rotation for the wrist joint and plan the rotation
+			arm_group_joints_state[arm_group_joints_state.size()-1] = arm_group_joints_state[arm_group_joints_state.size()-1]-generateRandomRotationAngle();
+			arm_group->setJointValueTarget(arm_group_joints_state);
+			bool wrist_rotation_plan_result2 =  arm_group->plan(wrist_rotation2_plan);
+			                // plan the final part of the trajectory: from the approach point to the goal
+			if (wrist_rotation_plan_result2){
+			  start_state_for_goal3_trajectory = arm_group->getCurrentState();
+			  ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the specified goal 3");
+			  moveit::core::jointTrajPointToRobotState(wrist_rotation2_plan.trajectory_.joint_trajectory,
+								   wrist_rotation2_plan.trajectory_.joint_trajectory.points.size() - 1,
+								   *start_state_for_goal3_trajectory);
+		     
+			  tf::poseEigenToMsg(start_state_for_goal3_trajectory->getGlobalLinkTransform(gripper_link_name), gripper_pose);
+
+			  octomap_manipulation(true);
+
+		      // change the orientation of the selected frame to match the orientation of the gripper after rotation
+			  transformed_goal2_frame_.pose.orientation.x= gripper_pose.orientation.x;
+			  transformed_goal2_frame_.pose.orientation.y= gripper_pose.orientation.y;
+			  transformed_goal2_frame_.pose.orientation.z= gripper_pose.orientation.z;
+			  transformed_goal2_frame_.pose.orientation.w= gripper_pose.orientation.w;
+			  
+			  transformed_goal3_frame_.pose.orientation.x = gripper_pose.orientation.x;
+			  transformed_goal3_frame_.pose.orientation.y = gripper_pose.orientation.y;
+			  transformed_goal3_frame_.pose.orientation.z = gripper_pose.orientation.z;
+			  transformed_goal3_frame_.pose.orientation.w = gripper_pose.orientation.w;
+			  
+			  transformed_approach_frame3_.pose.orientation.x = gripper_pose.orientation.x;
+			  transformed_approach_frame3_.pose.orientation.y = gripper_pose.orientation.y;
+			  transformed_approach_frame3_.pose.orientation.z = gripper_pose.orientation.z;
+			  transformed_approach_frame3_.pose.orientation.w = gripper_pose.orientation.w;
+			  
+			  std::vector<geometry_msgs::Pose> waypoints3;
+			  waypoints3.push_back(transformed_goal2_frame_.pose);
+			  waypoints3.push_back(transformed_goal3_frame_.pose);
+			  moveit_msgs::RobotTrajectory robot_trajectory3;
+			  arm_group->setStartState(*start_state_for_goal3_trajectory);
+			  double fraction3 = arm_group->computeCartesianPath(waypoints3, 0.01, 0.0, robot_trajectory3);
+			  
+			  cartesian_path_success_threshold = (approach_radius_ - kExtentionDistance)/approach_radius_ ;
+			  ROS_INFO_STREAM("CONTROLLER:: cartesian_path3  "<<fraction3);
+			  if (fraction3 > 0){
+			    to_goal3_plan.trajectory_ = robot_trajectory3;
+			    start_state_for_approach3_trajectory = arm_group->getCurrentState();
+			    
+
+			    ROS_INFO_STREAM("CONTROLLER:: Planning a trajectory to the specified goal");
+			    moveit::core::jointTrajPointToRobotState(to_goal3_plan.trajectory_.joint_trajectory,
+								     to_goal3_plan.trajectory_.joint_trajectory.points.size() - 1,
+								     *start_state_for_approach3_trajectory);
+			    
+			    
+			    std::vector<geometry_msgs::Pose> waypoints4;
+			    waypoints4.push_back(transformed_goal3_frame_.pose);
+			    waypoints4.push_back(transformed_approach_frame3_.pose);
+			    
+			    moveit_msgs::RobotTrajectory robot_trajectory4;
+			    arm_group->setStartState(*start_state_for_approach3_trajectory);
+			    double fraction4 = arm_group->computeCartesianPath(waypoints4, 0.01, 0.0, robot_trajectory4);
+			    
+			    cartesian_path_success_threshold = (approach_radius_ - kExtentionDistance)/approach_radius_ ;
+			    ROS_INFO_STREAM("CONTROLLER:: cartesian_path "<<fraction1);
+			    if (fraction4 > 0){
+			      to_approach_point3_plan.trajectory_ = robot_trajectory4;
+			      ROS_INFO_STREAM("CONTROLLER:: Executing planned motion");
+			      // Execute plane: from starting position to the approach position
+			      bool to_approach_point_motion_result = static_cast<bool>(arm_group->execute(to_approach_point1_plan));
+			      // random wrist rotation
+			      bool wrist_rotation_result = rotateWrist(arm_group, wrist_rotation1_plan);
+			      ros::Duration(1).sleep();		    
+			      // open gripper
+			      openGripper(gripper_pub,gripper_id);
+			      ros::Duration(1).sleep();
+			      // Execute plane: from approach position to the specified goal
+			      moveit::core::robotStateToRobotStateMsg(*arm_group->getCurrentState(), to_goal1_plan.start_state_);
+			      bool to_goal_motion1_result = static_cast<bool>(arm_group->execute(to_goal1_plan));
+			      // Execute plane: from approach position to the specified goal
+			      // close gripper
+			      closeGripper(gripper_pub,gripper_id);
+			      ros::Duration(1).sleep();
+
+			      moveit::core::robotStateToRobotStateMsg(*arm_group->getCurrentState(), to_goal2_plan.start_state_);
+			      //arm_group->setStartState(*arm_group->getCurrentState());
+			      bool to_goal_motion2_result = static_cast<bool>(arm_group->execute(to_goal2_plan));
+			      //arm_group->setStartState(*arm_group->getCurrentState());
+			      bool wrist_rotation_result2 = rotateWrist(arm_group, wrist_rotation2_plan);
+			      moveit::core::robotStateToRobotStateMsg(*arm_group->getCurrentState(), to_goal3_plan.start_state_);
+			      to_goal_motion2_result = static_cast<bool>(arm_group->execute(to_goal3_plan));
+			      if (to_goal_motion2_result){
+				// open gripper
+				openGripper(gripper_pub,gripper_id);
+				ros::Duration(1).sleep();			
+				moveit::core::robotStateToRobotStateMsg(*arm_group->getCurrentState(), to_approach_point3_plan.start_state_);
+				bool to_goal_motion3_result = static_cast<bool>(arm_group->execute(to_approach_point3_plan));
+				ros::Duration(1).sleep();
+				goToStartingPosition("right");
+				
+			  
+				// reverseBackTrajectory(to_approach_point2_plan, group_name, arm_group);
+				// // reverse back motion from starting position to the approach position
+				// reverseBackTrajectory(to_goal1_plan, group_name, arm_group);
+				// reverseBackTrajectory(wrist_rotation_plan, group_name, arm_group);
+				// // reverse back motion from starting position to the approach position
+				// reverseBackTrajectory(to_approach_point1_plan, group_name, arm_group);
+			      }else {ROS_WARN_STREAM("CONTROLLER:: Failed to execute waypoints");}
+			    }else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a straight line to aproch 3");}
+			  }else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a straight line to goal 3");}
+			}else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a plan wrist rotation");}
+		      }else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a straight line to goal2");}
+		    }else{ ROS_WARN_STREAM("CONTROLLER:: Failed to find a straight line to goal1");}
+		} else ROS_WARN_STREAM("CONTROLLER:: Failed to find a plan wrist rotation");
 	    } else ROS_WARN_STREAM("CONTROLLER:: Failed to find a plan from the starting position to the approach point");
 	}
-        goal1_.clear();
-        return ((fraction1 >= cartesian_path_success_threshold) && to_approach_point1_plan_result);
+	goal1_.clear();
+	return ((fraction1 >= cartesian_path_success_threshold) && to_approach_point1_plan_result);
     }
-
+  
 
     void client_disconnect_from_ros(){}
     void update(){}
@@ -683,7 +826,7 @@ private:
     geometry_msgs::PoseStamped transformed_approach_frame1_,transformed_approach_frame2_,transformed_approach_frame3_,
       approach_pose1_,approach_pose2_,approach_pose3_,
       goal1_pose_,goal2_pose_,goal3_pose_,
-      transformed_goal1_frame_,transformed_goal2_frame_,transformed_goal3_frame_;
+      transformed_goal1_frame_,transformed_goal2_frame_,transformed_goal2bis_frame_,transformed_goal3_frame_;
 
     tf::TransformListener tf_listener_;
 

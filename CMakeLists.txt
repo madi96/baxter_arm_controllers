@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.3)
-project(baxter_arm_controller)
+project(baxter_arm_controllers)
 
 find_package(catkin REQUIRED COMPONENTS
   moveit_ros_planning_interface
@@ -64,6 +64,7 @@ add_executable(controller_button_primitive src/controller_button_primitive.cpp)
 target_link_libraries(controller_button_primitive ${catkin_LIBRARIES})
 add_executable(controller_joystick_primitive src/controller_joystick_primitive.cpp)
 target_link_libraries(controller_joystick_primitive ${catkin_LIBRARIES})
-
+add_executable(controller_lego_demo src/controller_lego_demo.cpp)
+target_link_libraries(controller_lego_demo ${catkin_LIBRARIES})
 
 
